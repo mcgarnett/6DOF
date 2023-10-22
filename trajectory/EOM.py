@@ -84,9 +84,10 @@ class SixDOFGroup(om.Group):
         )
 
         self.add_subsystem(
-            "linear_system",
+            "body_rates",
             lin_sys,
             promotes_inputs=[("A", "I"), ("b", "w_rate_eqn_LHS")],
+            promotes_outputs=[("x", "w_rate")],
         )
         self.add_subsystem(
             "quaternion_rates",
