@@ -109,7 +109,8 @@ class QuaternionRates(om.ExplicitComponent):
         self.add_input("w", val=np.ones([nn, 3]), units="rad/s", desc="body angular rates")
         self.add_output("R_dot", val=np.zeros([nn, 4]), desc="Rotation Quaternion rates", units="1/s")
 
-        self.quat_shuffle = np.array(
+        # permutation matrix
+        self.P = np.array(
             [
                 [[1, 0, 0, 0], [0, -1, 0, 0], [0, 0, -1, 0], [0, 0, 0, -1]],
                 [[0, 1, 0, 0], [1, 0, 0, 0], [0, 0, 0, 1], [0, 0, -1, 0]],
@@ -117,6 +118,8 @@ class QuaternionRates(om.ExplicitComponent):
                 [[0, 0, 0, 1], [0, 0, 1, 0], [0, -1, 0, 0], [1, 0, 0, 0]],
             ]
         )
+
+        self.P_reduced = np.delete(self.P, 0, axis=2)
 
         range4 = np.arange(4)
         rows = []
@@ -149,9 +152,9 @@ class QuaternionRates(om.ExplicitComponent):
 
         omega_quat = np.column_stack((np.zeros(nn), omega))
 
-        R_w, R_x, R_y, R_z = R[:, 0], R[:, 1], R[:, 2], R[:, 3]
+        # R_w, R_x, R_y, R_z = R[:, 0], R[:, 1], R[:, 2], R[:, 3]
 
-        om_x, om_y, om_z = omega[:, 0], omega[:, 1], omega[:, 2]
+        # om_x, om_y, om_z = omega[:, 0], omega[:, 1], omega[:, 2]
 
         # R is 1 w is 2
         # w = w1 * w2 - x1 * x2 - y1 * y2 - z1 * z2
@@ -159,34 +162,37 @@ class QuaternionRates(om.ExplicitComponent):
         # y = w1 * y2 + y1 * w2 + z1 * x2 - x1 * z2
         # z = w1 * z2 + z1 * w2 + x1 * y2 - y1 * x2
 
-        R_dot = np.zeros([nn, 4])
-        om_w = 0
+        # R_dot = np.zeros([nn, 4])
+        # om_w = 0
         # orignal
         # R_dot[:, 0] = R_w * om_w - R_x * om_x - R_y * om_y - R_z * om_z
         # R_dot[:, 1] = R_w * om_x + R_x * om_w + R_y * om_z - R_z * om_y
         # R_dot[:, 2] = R_w * om_y + R_y * om_w + R_z * om_x - R_x * om_z
         # R_dot[:, 3] = R_w * om_z + R_z * om_w + R_x * om_y - R_y * om_x
 
-        R_dot[:, 0] = R_w * om_w - R_x * om_x - R_y * om_y - R_z * om_z
-        R_dot[:, 1] = R_x * om_w + R_w * om_x - R_z * om_y + R_y * om_z
-        R_dot[:, 2] = R_y * om_w + R_z * om_x + R_w * om_y - R_x * om_z
-        R_dot[:, 3] = R_z * om_w - R_y * om_x + R_x * om_y + R_w * om_z
+        # omega ordered
+        # R_dot[:, 0] = R_w * om_w - R_x * om_x - R_y * om_y - R_z * om_z
+        # R_dot[:, 1] = R_x * om_w + R_w * om_x - R_z * om_y + R_y * om_z
+        # R_dot[:, 2] = R_y * om_w + R_z * om_x + R_w * om_y - R_x * om_z
+        # R_dot[:, 3] = R_z * om_w - R_y * om_x + R_x * om_y + R_w * om_z
 
-        R_dot[:, 0] = R_w * om_w - R_x * om_x - R_y * om_y - R_z * om_z
-        R_dot[:, 1] = R_w * om_x + R_x * om_w + R_y * om_z - R_z * om_y
-        R_dot[:, 2] = R_w * om_y - R_x * om_z + R_y * om_w + R_z * om_x
-        R_dot[:, 3] = R_w * om_z + R_x * om_y - R_y * om_x + R_z * om_w
+        # r ordered
+        # R_dot[:, 0] = R_w * om_w - R_x * om_x - R_y * om_y - R_z * om_z
+        # R_dot[:, 1] = R_w * om_x + R_x * om_w + R_y * om_z - R_z * om_y
+        # R_dot[:, 2] = R_w * om_y - R_x * om_z + R_y * om_w + R_z * om_x
+        # R_dot[:, 3] = R_w * om_z + R_x * om_y - R_y * om_x + R_z * om_w
 
         # R_dot = np.einsum("jkl,k->jl",w_shuffle,t)
         # np.einsum("jkl,ik->ijl",w_shuffle,om)
         # print(R)
-        R_dot2 = np.einsum("il,jkl,ik->ij", R, self.quat_shuffle, omega_quat)
-        print(R_dot - R_dot2)
-        print(R_dot)
-        print(R_dot2)
-
+        # R_dot2 = np.einsum("il,jkl,ik->ij", R, self.R_permute, omega_quat)
+        R_dot2 = np.einsum("ij,ljk,ik->il", R, self.P, omega_quat)
+        # print(R_dot - R_dot2)
+        # print(R_dot)
+        # print(R_dot2)
         # print(R_dot[:, 0])
         # print(R_w, R_x, R_y, R_z)
+
         outputs["R_dot"] = R_dot2
 
     def compute_partials(self, inputs, J):
@@ -195,9 +201,11 @@ class QuaternionRates(om.ExplicitComponent):
         omega = inputs["w"]
         omega_quat = np.column_stack((np.zeros(nn), omega))
 
-        J["R_dot", "R"] = np.einsum("jkl,ik->ijl", self.quat_shuffle, omega_quat).flatten()
-        # J["R_dot", "w"] = np.einsum("ik,jkl->ijl", R, self.quat_shuffle).flatten()
-        # J["R_dot", "R"] = np.einsum("ljk,ik->ilj", self.quat_shuffle, omega_quat).flatten()
+        # magic formulas. Taking partials involves not dropping the index over which you sum in the formula
+
+        J["R_dot", "R"] = np.einsum("ljk,ik->ilj", self.P, omega_quat).flatten()
+
+        J["R_dot", "w"] = np.einsum("ljk,ij->ilk", self.P_reduced, R).flatten()
 
 
 class DownVector(om.ExplicitComponent):
