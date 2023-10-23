@@ -1,3 +1,7 @@
 *.pyc
 *.html
+*.db
+*.out
 reports/
+.spyproject/
+coloring_files/
