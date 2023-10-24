@@ -96,6 +96,13 @@ class SixDOFGroup(om.Group):
             promotes_outputs=["*"],
         )
 
+        self.add_subsystem(
+            "rotation_matrix",
+            RotationMatrix(num_nodes=nn),
+            promotes_inputs=["*"],
+            promotes_outputs=["*"],
+        )
+
         self.set_input_defaults("I", units="kg*m**2", val=np.tile(np.eye(3), [nn, 1, 1]))
         self.set_input_defaults("F_by_m", units="m/s**2", val=np.zeros([nn, 3]))
         self.set_input_defaults("M", units="N*m", val=np.zeros([nn, 3]))
@@ -188,6 +195,121 @@ class QuaternionRates(om.ExplicitComponent):
         J["R_rate", "w_b"] = 0.5 * np.einsum("ljk,ij->ilk", self.P_reduced, R).flatten()
 
 
+class RotationMatrix(om.ExplicitComponent):
+    def initialize(self):
+        self.options.declare("num_nodes", types=int)
+
+    def setup(self):
+        nn = self.options["num_nodes"]
+
+        self.add_input("R", val=np.ones([nn, 4]), desc="Rotation Quaternion")
+        self.add_output("C", val=np.zeros([nn, 3, 3]), desc="vector to rotate")
+        rows = []
+        cols = []
+        for k in np.arange(nn):
+            for i in np.arange(9):
+                for j in np.arange(4):
+                    rows += [9 * k + i]
+                    cols += [4 * k + j]
+
+        self.declare_partials("C", "R", rows=rows, cols=cols)
+
+    def compute(self, inputs, outputs):
+        R = inputs["R"]
+        q0, q1, q2, q3 = R[:, 0], R[:, 1], R[:, 2], R[:, 3]
+
+        c00 = q0**2 + q1**2 - q2**2 - q3**2
+        c01 = 2 * (q1 * q2 - q0 * q3)
+        c02 = 2 * (q1 * q3 + q0 * q2)
+        c10 = 2 * (q1 * q2 + q0 * q3)
+        c11 = q0**2 - q1**2 + q2**2 - q3**2
+        c12 = 2 * (q2 * q3 - q0 * q1)
+        c20 = 2 * (q1 * q3 - q0 * q2)
+        c21 = 2 * (q2 * q3 + q0 * q1)
+        c22 = q0**2 - q1**2 - q2**2 + q3**2
+        # Rotation Matrix
+        C = np.array([[c00, c01, c02], [c10, c11, c12], [c20, c21, c22]])
+        C = np.moveaxis(C, 2, 0)
+        outputs["C"] = C
+
+    def compute_partials(self, inputs, J):
+        R = inputs["R"]
+        q0, q1, q2, q3 = R[:, 0], R[:, 1], R[:, 2], R[:, 3]
+        # C elements in rows of J, wrt q components in columns of J
+
+        # c00 = q0**2 + q1**2 - q2**2 - q3**2
+        j00 = 2 * q0
+        j01 = 2 * q1
+        j02 = -2 * q2
+        j03 = -2 * q3
+
+        # c01 = 2 * (q1 * q2 - q0 * q3)
+        j10 = -2 * q3
+        j11 = 2 * q2
+        j12 = 2 * q1
+        j13 = -2 * q0
+
+        # c02 = 2 * (q1 * q3 + q0 * q2)
+        j20 = 2 * q2
+        j21 = 2 * q3
+        j22 = 2 * q0
+        j23 = 2 * q1
+
+        # c10 = 2 * (q1 * q2 + q0 * q3)
+        j30 = 2 * q3
+        j31 = 2 * q2
+        j32 = 2 * q1
+        j33 = 2 * q0
+
+        # c11 = q0**2 - q1**2 + q2**2 - q3**2
+
+        j40 = 2 * q0
+        j41 = -2 * q1
+        j42 = 2 * q2
+        j43 = -2 * q3
+
+        # c12 = 2 * (q2 * q3 - q0 * q1)
+        j50 = -2 * q1
+        j51 = -2 * q0
+        j52 = 2 * q3
+        j53 = 2 * q2
+
+        # c20 = 2 * (q1 * q3 - q0 * q2)
+        j60 = -2 * q2
+        j61 = 2 * q3
+        j62 = -2 * q0
+        j63 = 2 * q1
+
+        # c21 = 2 * (q2 * q3 + q0 * q1)
+        j70 = 2 * q1
+        j71 = 2 * q0
+        j72 = 2 * q3
+        j73 = 2 * q2
+
+        # c22 = q0**2 - q1**2 - q2**2 + q3**2
+        j80 = 2 * q0
+        j81 = -2 * q1
+        j82 = -2 * q2
+        j83 = 2 * q3
+
+        J_mat = np.array(
+            [
+                [j00, j01, j02, j03],
+                [j10, j11, j12, j13],
+                [j20, j21, j22, j23],
+                [j30, j31, j32, j33],
+                [j40, j41, j42, j43],
+                [j50, j51, j52, j53],
+                [j60, j61, j62, j63],
+                [j70, j71, j72, j73],
+                [j80, j81, j82, j83],
+            ]
+        )
+        J_mat = np.moveaxis(J_mat, 2, 0)
+        # print(J_mat.shape)
+        J["C", "R"] = J_mat.flatten()
+
+
 class DownVector(om.ExplicitComponent):
     def initialize(self):
         self.options.declare("num_nodes", types=int)
@@ -227,6 +349,6 @@ if __name__ == "__main__":
     p.run_model()
     partials = p.check_partials(
         compact_print=True,
-        method="fd",
+        method="cs",
     )
     om.n2(p)
