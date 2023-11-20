@@ -96,16 +96,84 @@ class SixDOFGroup(om.Group):
             promotes_outputs=["*"],
         )
 
+        self.set_input_defaults("I", units="kg*m**2", val=np.tile(np.eye(3), [nn, 1, 1]))
+        self.set_input_defaults("F_by_m", units="m/s**2", val=np.zeros([nn, 3]))
+        self.set_input_defaults("M", units="N*m", val=np.zeros([nn, 3]))
+        # self.set_input_defaults("R", val=np.ones([nn, 4]))
+        # self.set_input_defaults("down_vec_i",val=np.tile())
+
+
+class QuaternionGroup(om.Group):
+    def initialize(self):
+        self.options.declare("num_nodes", types=int)
+
+    def setup(self):
+        nn = self.options["num_nodes"]
+
+        magnitude = om.VectorMagnitudeComp(vec_size=nn, length=4, in_name="R", mag_name="R_mag", units=None)
+        self.add_subsystem("quat_magnitude", magnitude, promotes_inputs=["*"], promotes_outputs=["*"])
+        self.add_subsystem("quat_normalize", NormalizeQuat(num_nodes=nn), promotes_inputs=["*"], promotes_outputs=["*"])
+        self.add_subsystem("quat_inverse", InvertQuat(num_nodes=nn), promotes_inputs=["*"], promotes_outputs=["*"])
+
+        self.set_input_defaults("R", val=np.zeros([nn, 4]))
+
+
+class FrameRotationsGroup(om.Group):
+    def __init__(self, **kwargs):
+        """
+        Initialize the frame rotation component.
+        """
+        super().__init__(**kwargs)
+
+        self._variables = []
+
+    def initialize(self):
+        self.options.declare("num_nodes", types=int)
+
+    def setup(self):
+        nn = self.options["num_nodes"]
+
         self.add_subsystem(
             "rotation_matrix",
             RotationMatrix(num_nodes=nn),
+            promotes_inputs=[("R", "R_normed")],
+            promotes_outputs=["C"],
+        )
+
+        for i, (input_var, output_var, units) in enumerate(self._variables):
+            if i == 0:
+                mat_vec_prod_2 = om.MatrixVectorProductComp(
+                    A_name="C",
+                    A_units=None,
+                    x_name=input_var,
+                    x_units=units,
+                    b_name=output_var,
+                    b_units=units,
+                    vec_size=nn,
+                    A_shape=(3, 3),
+                )
+
+            else:
+                mat_vec_prod_2.add_product(
+                    A_name="C",
+                    A_units=None,
+                    x_name=input_var,
+                    x_units=units,
+                    b_name=output_var,
+                    b_units=units,
+                    vec_size=nn,
+                    A_shape=(3, 3),
+                )
+
+        self.add_subsystem(
+            "rotation",
+            mat_vec_prod_2,
             promotes_inputs=["*"],
             promotes_outputs=["*"],
         )
 
-        self.set_input_defaults("I", units="kg*m**2", val=np.tile(np.eye(3), [nn, 1, 1]))
-        self.set_input_defaults("F_by_m", units="m/s**2", val=np.zeros([nn, 3]))
-        self.set_input_defaults("M", units="N*m", val=np.zeros([nn, 3]))
+    def add_variable(self, var):
+        self._variables += [var]
 
 
 class QuaternionRates(om.ExplicitComponent):
@@ -308,6 +376,60 @@ class RotationMatrix(om.ExplicitComponent):
         J_mat = np.moveaxis(J_mat, 2, 0)
         # print(J_mat.shape)
         J["C", "R"] = J_mat.flatten()
+
+
+class NormalizeQuat(om.ExplicitComponent):
+    def initialize(self):
+        self.options.declare("num_nodes", types=int)
+
+    def setup(self):
+        nn = self.options["num_nodes"]
+        self.add_input("R", val=np.zeros([nn, 4]), units=None)
+        self.add_input("R_mag", val=np.zeros(nn), units=None)
+        self.add_output("R_normed", val=np.zeros([nn, 4]), units=None)
+
+        ar = np.arange(nn * 4)
+        self.declare_partials("R_normed", "R", rows=ar, cols=ar)
+
+        rows = []
+        cols = []
+        for k in np.arange(nn):
+            for i in np.arange(4):
+                rows += [4 * k + i]
+                cols += [k]
+
+        self.declare_partials("R_normed", "R_mag", rows=rows, cols=cols)
+
+    def compute(self, inputs, outputs):
+        R = inputs["R"]
+        R_mag = inputs["R_mag"]
+
+        outputs["R_normed"] = np.einsum("ij, i -> ij", R, 1 / R_mag)
+
+    def compute_partials(self, inputs, J):
+        R = inputs["R"]
+        R_mag = inputs["R_mag"]
+
+        J["R_normed", "R_mag"] = np.einsum("ij, i -> ij", R, -1 / R_mag**2).flatten()
+        J["R_normed", "R"] = np.repeat(1 / R_mag, 4)
+
+
+class InvertQuat(om.ExplicitComponent):
+    def initialize(self):
+        self.options.declare("num_nodes", types=int)
+
+    def setup(self):
+        nn = self.options["num_nodes"]
+        self.add_input("R_normed", val=np.zeros([nn, 4]), units=None)
+        self.add_output("R_inverse", val=np.zeros([nn, 4]), units=None)
+        ar = np.arange(4 * nn)
+        a = np.array([-1, 1, 1, 1])
+        self.a = a
+        self.declare_partials("R_inverse", "R_normed", rows=ar, cols=ar, val=np.tile(a, nn))
+
+    def compute(self, inputs, outputs):
+        R = inputs["R_normed"]
+        outputs["R_inverse"] = R * self.a
 
 
 class DownVector(om.ExplicitComponent):
