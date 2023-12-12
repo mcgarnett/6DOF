@@ -55,9 +55,7 @@ class SixDOFGroup(om.Group):
         self.add_subsystem("mat_vec_prod_1", mat_vec_prod, promotes_inputs=["*"], promotes_outputs=["*"])
         self.add_subsystem("cross_prod_1", cross_prod_1, promotes_inputs=["*"], promotes_outputs=["*"])
 
-        adder = om.AddSubtractComp()
-
-        adder.add_equation(
+        adder = om.AddSubtractComp(
             "V_b_rate",
             ["F_by_m", "w_b_cross_V_b"],
             vec_size=nn,
@@ -66,6 +64,7 @@ class SixDOFGroup(om.Group):
             units="m/s**2",
             scaling_factors=[1, -1],
         )
+
         adder.add_equation(
             "w_b_rate_eqn_LHS",
             ["M", "w_b_cross_I_times_w_b"],
@@ -432,31 +431,63 @@ class InvertQuat(om.ExplicitComponent):
         outputs["R_inverse"] = R * self.a
 
 
-class DownVector(om.ExplicitComponent):
+class ForceAndMomentAdderGroup(om.Group):
+    def __init__(self, **kwargs):
+        """
+        Initialize the frame rotation component.
+        """
+        super().__init__(**kwargs)
+
+        self._force_position_names = []
+        self._moment_names = []
+
     def initialize(self):
         self.options.declare("num_nodes", types=int)
-        self.options.declare(
-            "p_origin", default=np.array([0, 0, 0]), desc="Origin of inertial frame. Can make it launch site"
-        )
 
     def setup(self):
         nn = self.options["num_nodes"]
-        self.add_input("p", val=np.zeros([nn, 3]), units="m", desc="position in ECI frame")
-        self.add_input("body_angles", val=np.zeros([nn, 3]), units="rad", desc="body angles")
 
+        cross_prod = om.CrossProductComp()
+        force_names, output_names = [], []
+        for i, (force_name, pos_name) in enumerate(self.force_position_names):
+            output_name = force_name + "_moment"
+            force_names += [force_name]
+            output_names += [output_name]
+            cross_prod.add_product(
+                output_name,
+                a_name=pos_name,
+                b_name=force_name,
+                c_units="N*m",
+                a_units="m",
+                b_units="N",
+                vec_size=nn,
+            ),
 
-class GravityForce(om.ExplicitComponent):
-    def initialize(self):
-        self.options.declare("num_nodes", types=int)
-        self.options.declare(
-            "p_origin", default=np.array([0, 0, 0]), desc="Origin of inertial frame. Can make it launch site"
+        adder = om.AddSubtractComp()
+
+        adder.add_equation(
+            "F_total",
+            force_names,
+            vec_size=nn,
+            length=3,
+            val=0.0,
+            units="N",
         )
 
-    def setup(self):
-        nn = self.options["num_nodes"]
-        self.add_input("p", val=np.zeros([nn, 3]), units="m", desc="position in ECI frame")
-        self.add_input("body_angles", val=np.zeros([nn, 3]), units="rad", desc="body angles")
-        self.add_output("F_grav", val=np.zeros([nn, 3]), units="N", desc="gravity force vector")
+        adder.add_equation(
+            "M_total",
+            output_names + self._moment_names,
+            vec_size=nn,
+            length=3,
+            val=0.0,
+            units="N*m",
+        )
+
+        self.add_subsystem("cross_prod", cross_prod, promotes=["*"])
+        self.add_subsystem("adder", adder, promotes=["*"])
+
+    def add_variable(self, var):
+        self._variables += [var]
 
 
 if __name__ == "__main__":
