@@ -57,7 +57,7 @@ class SixDOFGroup(om.Group):
 
         adder = om.AddSubtractComp(
             "V_b_rate",
-            ["F_by_m", "w_b_cross_V_b"],
+            ["a_b", "w_b_cross_V_b"],
             vec_size=nn,
             length=3,
             val=0.0,
@@ -67,7 +67,7 @@ class SixDOFGroup(om.Group):
 
         adder.add_equation(
             "w_b_rate_eqn_LHS",
-            ["M", "w_b_cross_I_times_w_b"],
+            ["M_total_b", "w_b_cross_I_times_w_b"],
             vec_size=nn,
             length=3,
             val=0.0,
@@ -96,8 +96,8 @@ class SixDOFGroup(om.Group):
         )
 
         self.set_input_defaults("I", units="kg*m**2", val=np.tile(np.eye(3), [nn, 1, 1]))
-        self.set_input_defaults("F_by_m", units="m/s**2", val=np.zeros([nn, 3]))
-        self.set_input_defaults("M", units="N*m", val=np.zeros([nn, 3]))
+        self.set_input_defaults("a_b", units="m/s**2", val=np.zeros([nn, 3]))
+        self.set_input_defaults("M_total_b", units="N*m", val=np.zeros([nn, 3]))
         # self.set_input_defaults("R", val=np.ones([nn, 4]))
         # self.set_input_defaults("down_vec_i",val=np.tile())
 
@@ -431,6 +431,46 @@ class InvertQuat(om.ExplicitComponent):
         outputs["R_inverse"] = R * self.a
 
 
+class Accel(om.ExplicitComponent):
+    def initialize(self):
+        self.options.declare("num_nodes", types=int)
+
+    def setup(self):
+        nn = self.options["num_nodes"]
+
+        self.add_input("F_total_b", val=np.zeros([nn, 3]), units="N")
+        self.add_input("m", val=np.ones(nn), units="kg")
+        self.add_output("a_b", val=np.ones([nn, 3]), units="m/s**2")
+
+        num_jac_entries = 3 * nn
+
+        rows = []
+        cols = []
+
+        for i in range(num_jac_entries):
+            rows += [i]
+            cols += [i // 3]
+
+        self.declare_partials("a_b", "m", rows=rows, cols=cols)
+
+        ar = np.arange(num_jac_entries)
+
+        self.declare_partials("a_b", "F_total_b", rows=ar, cols=ar)
+
+    def compute(self, inputs, outputs):
+        F = inputs["F_total_b"]
+        m = inputs["m"]
+
+        outputs["a_b"] = F / m[:, np.newaxis]
+
+    def compute_partials(self, inputs, J):
+        F = inputs["F_total_b"]
+        m = inputs["m"]
+
+        J["a_b", "F_total_b"] = np.repeat(1 / m, 3)
+        J["a_b", "m"] = (-F / m[:, np.newaxis] ** 2).flatten()
+
+
 class ForceAndMomentAdderGroup(om.Group):
     def __init__(self, **kwargs):
         """
@@ -447,47 +487,41 @@ class ForceAndMomentAdderGroup(om.Group):
     def setup(self):
         nn = self.options["num_nodes"]
 
-        cross_prod = om.CrossProductComp()
         force_names, output_names = [], []
-        for i, (force_name, pos_name) in enumerate(self.force_position_names):
+        for i, (pos_name, force_name) in enumerate(self._force_position_names):
             output_name = force_name + "_moment"
             force_names += [force_name]
             output_names += [output_name]
-            cross_prod.add_product(
-                output_name,
-                a_name=pos_name,
-                b_name=force_name,
-                c_units="N*m",
-                a_units="m",
-                b_units="N",
-                vec_size=nn,
-            ),
+
+            if i == 0:
+                cross_prod = om.CrossProductComp(
+                    c_name=output_name, a_name=pos_name, b_name=force_name, c_units="N*m", a_units="m", b_units="N", vec_size=nn
+                )
+            else:
+                cross_prod.add_product(
+                    c_name=output_name, a_name=pos_name, b_name=force_name, c_units="N*m", a_units="m", b_units="N", vec_size=nn
+                )
 
         adder = om.AddSubtractComp()
 
-        adder.add_equation(
-            "F_total",
-            force_names,
-            vec_size=nn,
-            length=3,
-            val=0.0,
-            units="N",
-        )
+        adder.add_equation("F_total_b", force_names, vec_size=nn, length=3, val=0.0, units="N")
 
-        adder.add_equation(
-            "M_total",
-            output_names + self._moment_names,
-            vec_size=nn,
-            length=3,
-            val=0.0,
-            units="N*m",
-        )
+        adder.add_equation("M_total_b", output_names + self._moment_names, vec_size=nn, length=3, val=0.0, units="N*m")
 
         self.add_subsystem("cross_prod", cross_prod, promotes=["*"])
+
         self.add_subsystem("adder", adder, promotes=["*"])
 
-    def add_variable(self, var):
-        self._variables += [var]
+        self.add_subsystem("accel", Accel(num_nodes=nn), promotes=["*"])
+
+        for pos_name, force_name in self._force_position_names:
+            self.set_input_defaults(pos_name, val=np.zeros([nn, 3]))
+
+    def add_force(self, position_name, force_name):
+        self._force_position_names += [(position_name, force_name)]
+
+    def add_moment(self, moment_name):
+        self._moment_names += moment_name
 
 
 if __name__ == "__main__":
