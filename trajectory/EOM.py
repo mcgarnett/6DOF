@@ -439,6 +439,7 @@ class Accel(om.ExplicitComponent):
         nn = self.options["num_nodes"]
 
         self.add_input("F_total_b", val=np.zeros([nn, 3]), units="N")
+        self.add_input("g_b", val=np.zeros([nn, 3]), units="m/s**2")
         self.add_input("m", val=np.ones(nn), units="kg")
         self.add_output("a_b", val=np.ones([nn, 3]), units="m/s**2")
 
@@ -456,12 +457,14 @@ class Accel(om.ExplicitComponent):
         ar = np.arange(num_jac_entries)
 
         self.declare_partials("a_b", "F_total_b", rows=ar, cols=ar)
+        self.declare_partials("a_b", "g_b", rows=ar, cols=ar, val=1.0)
 
     def compute(self, inputs, outputs):
-        F = inputs["F_total_b"]
+        F_b = inputs["F_total_b"]
+        g_b = inputs["g_b"]
         m = inputs["m"]
 
-        outputs["a_b"] = F / m[:, np.newaxis]
+        outputs["a_b"] = F_b / m[:, np.newaxis] + g_b
 
     def compute_partials(self, inputs, J):
         F = inputs["F_total_b"]
@@ -472,6 +475,7 @@ class Accel(om.ExplicitComponent):
 
 
 class ForceAndMomentAdderGroup(om.Group):
+    # TODO add dummy force so adder can deal with just one force
     def __init__(self, **kwargs):
         """
         Initialize the frame rotation component.
