@@ -40,9 +40,13 @@ class ODE(om.Group):
         to_inertial.add_variable(("V_b", "V_i", "m/s"))
         to_inertial.add_variable(("M_total_b", "M_i", "N*m"))
         to_inertial.add_variable(("X_b", "X_i", "m"))
+        to_inertial.add_variable(("Y_b", "Y_i", "m"))
+        to_inertial.add_variable(("Z_b", "Z_i", "m"))
         self.add_subsystem("to_inertial_frame", to_inertial, promotes_inputs=["*"], promotes_outputs=["*"])
 
         self.set_input_defaults("X_b", val=np.tile(np.array([1, 0, 0]), (nn, 1)))
+        self.set_input_defaults("Y_b", val=np.tile(np.array([0, 1, 0]), (nn, 1)))
+        self.set_input_defaults("Z_b", val=np.tile(np.array([0, 0, 1]), (nn, 1)))
 
 
 if __name__ == "__main__":
