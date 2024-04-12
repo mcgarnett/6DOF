@@ -33,8 +33,8 @@ p.driver.opt_settings["print_level"] = 1
 # p.driver.opt_settings["mu_init"] = 1
 
 
-# t = dm.Radau(num_segments=50, order=3)
-t = dm.Birkhoff(grid=dm.BirkhoffGrid(nodes_per_seg=100))
+t = dm.Radau(num_segments=50, order=3)
+# t = dm.Birkhoff(grid=dm.BirkhoffGrid(nodes_per_seg=100))
 
 traj = dm.Trajectory()
 
@@ -71,7 +71,7 @@ phase.add_parameter("I", val=I_mat, units="kg*m**2", targets=["I"])
 
 # test mixing wildcard ODE variable expansion and unit overrides
 # phase.timeseries_options["include_parameters"] = False
-phase.add_timeseries_output(["w_i", "w_b", "M_i", "X_i"])
+phase.add_timeseries_output(["w_i", "w_b", "M_i", "X_i", "M_control"])
 # phase.add_timeseries_output("*")
 phase.add_objective("time", loc="final", scaler=1)
 
@@ -106,6 +106,7 @@ t = p.get_val("traj.phase0.timeseries.time")
 w_i = p.get_val("traj.phase0.timeseries.w_i")
 w_b = p.get_val("traj.phase0.timeseries.w_b")
 M_control = p.get_val("traj.phase0.timeseries.M_control")
+# M_control = p.get_val("traj.phase0.controls:M_control")
 X_i = p.get_val("traj.phase0.timeseries.X_i")
 w_i_normed = w_i / np.linalg.norm(w_i, axis=1)[:, np.newaxis]
 
