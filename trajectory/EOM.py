@@ -422,7 +422,7 @@ class InvertQuat(om.ExplicitComponent):
         self.add_input("R_normed", val=np.zeros([nn, 4]), units=None)
         self.add_output("R_inverse", val=np.zeros([nn, 4]), units=None)
         ar = np.arange(4 * nn)
-        a = np.array([-1, 1, 1, 1])
+        a = np.array([1, -1, -1, -1])
         self.a = a
         self.declare_partials("R_inverse", "R_normed", rows=ar, cols=ar, val=np.tile(a, nn))
 
