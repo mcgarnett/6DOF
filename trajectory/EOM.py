@@ -176,15 +176,21 @@ class FrameRotationsGroup(om.Group):
 
 
 class QuaternionRates(om.ExplicitComponent):
+    """
+    Calculate rate of change wrt to time of rotation quaternion representing rotation from body frame to inertial frame.
+    See reference [1]. It is not necessary to maintain the rotation quaternion magnitude equal to 1 with constraints for the purpose
+    of integration
+    """
+
     def initialize(self):
         self.options.declare("num_nodes", types=int)
 
     def setup(self):
         nn = self.options["num_nodes"]
 
-        self.add_input("R", val=np.ones([nn, 4]), desc="Rotation Quaternion")
-        self.add_input("w_b", val=np.ones([nn, 3]), units="rad/s", desc="body angular rates")
-        self.add_output("R_rate", val=np.zeros([nn, 4]), desc="Rotation Quaternion rates", units="1/s")
+        self.add_input("R", val=np.ones([nn, 4]), desc="Body frame to inertial frame Quaternion")
+        self.add_input("w_b", val=np.ones([nn, 3]), units="rad/s", desc="Angular velocity vector in body frame")
+        self.add_output("R_rate", val=np.zeros([nn, 4]), desc="Rotation quaternion rates", units="1/s")
 
         # permutation matrices to get quaternion multiplication
         self.P = np.array(
@@ -198,17 +204,15 @@ class QuaternionRates(om.ExplicitComponent):
 
         self.P_reduced = np.delete(self.P, 0, axis=2)
 
+        # The Jacobian of q_dot vs q is sparse has a block diagonal pattern. Diagonal blocks are 4x4
         range4 = np.arange(4)
         rows = []
         cols = []
-        # set the jacobian sparsity pattern, iterante through num nodes first and fill out the diagonal
         for k in np.arange(nn):
             for i in range4:
                 for j in range4:
                     rows += [4 * k + i]
                     cols += [4 * k + j]
-        # print(rows)
-        # print(cols)
         self.declare_partials("R_rate", "R", rows=rows, cols=cols)
 
         range3 = np.arange(3)
@@ -245,6 +249,11 @@ class QuaternionRates(om.ExplicitComponent):
         # R_dot[:, 2] = R_w * om_y - R_x * om_z + R_y * om_w + R_z * om_x
         # R_dot[:, 3] = R_w * om_z + R_x * om_y - R_y * om_x + R_z * om_w
 
+        # ref [1] equation 10
+        # i index: time
+        # j index: quaternion element
+        # k index: angular rate element
+        # l index: quaternion rate element, permutation tensor "page"
         R_rate = 0.5 * np.einsum("ij,ljk,ik->il", R, self.P, omega_quat)
 
         outputs["R_rate"] = R_rate
@@ -255,22 +264,32 @@ class QuaternionRates(om.ExplicitComponent):
         omega = inputs["w_b"]
         omega_quat = np.column_stack((np.zeros(nn), omega))
 
-        # magic formulas. Taking partials involves not dropping the index over which you sum in the formula
+        # Some trial and error was used to find correct einsum expression for partials.
+        # If you are differenting wrt to an index you are summing over in expression that is being differentiated
+        # do not drop the index in partials
 
+        #
         J["R_rate", "R"] = 0.5 * np.einsum("ljk,ik->ilj", self.P, omega_quat).flatten()
 
         J["R_rate", "w_b"] = 0.5 * np.einsum("ljk,ij->ilk", self.P_reduced, R).flatten()
 
 
 class RotationMatrix(om.ExplicitComponent):
+    """
+    Generate rotation matrix from quaternion. Actual rotation transformation does with built-in OpenMDAO matrix-vector multiply.
+    It is easier to calculate partials this way
+    """
+
     def initialize(self):
         self.options.declare("num_nodes", types=int)
 
     def setup(self):
         nn = self.options["num_nodes"]
 
-        self.add_input("R", val=np.ones([nn, 4]), desc="Rotation Quaternion")
+        self.add_input("R", val=np.ones([nn, 4]), desc="Body frame to inertial frame Quaternion")
         self.add_output("C", val=np.zeros([nn, 3, 3]), desc="vector to rotate")
+
+        # Jacobian sparsity pattern is block diagonal with 9x4 blocks
         rows = []
         cols = []
         for k in np.arange(nn):
@@ -285,6 +304,7 @@ class RotationMatrix(om.ExplicitComponent):
         R = inputs["R"]
         q0, q1, q2, q3 = R[:, 0], R[:, 1], R[:, 2], R[:, 3]
 
+        # calculate matrix elements
         c00 = q0**2 + q1**2 - q2**2 - q3**2
         c01 = 2 * (q1 * q2 - q0 * q3)
         c02 = 2 * (q1 * q3 + q0 * q2)
@@ -296,6 +316,8 @@ class RotationMatrix(om.ExplicitComponent):
         c22 = q0**2 - q1**2 - q2**2 + q3**2
         # Rotation Matrix
         C = np.array([[c00, c01, c02], [c10, c11, c12], [c20, c21, c22]])
+        # we formed the matrix with time index as last dimension of array, but Dymos convention is to have it as first index
+        # put in right order
         C = np.moveaxis(C, 2, 0)
         outputs["C"] = C
 
@@ -373,19 +395,26 @@ class RotationMatrix(om.ExplicitComponent):
             ]
         )
         J_mat = np.moveaxis(J_mat, 2, 0)
-        # print(J_mat.shape)
+
         J["C", "R"] = J_mat.flatten()
 
 
 class NormalizeQuat(om.ExplicitComponent):
+    """
+    The integrated quaternion state is not constrained to be magnitude 1 and will in generatl not be of magnitude 1 due to finite
+    numerical precision of integration.
+    For the purposes of carrying out a rotation with the body to inertial frame quaternion, a quaternion of magnitude 1 must be used.
+    Normalize the quaternion rotation state to magnitude 1
+    """
+
     def initialize(self):
         self.options.declare("num_nodes", types=int)
 
     def setup(self):
         nn = self.options["num_nodes"]
-        self.add_input("R", val=np.zeros([nn, 4]), units=None)
-        self.add_input("R_mag", val=np.zeros(nn), units=None)
-        self.add_output("R_normed", val=np.zeros([nn, 4]), units=None)
+        self.add_input("R", val=np.zeros([nn, 4]), units=None, desc="body frame to inertial frame quaternion")
+        self.add_input("R_mag", val=np.ones(nn), units=None, desc="magnitude of body frame to inertial frame quaternion")
+        self.add_output("R_normed", val=np.zeros([nn, 4]), units=None, desc="normalized body frame to inertial frame quaternion")
 
         ar = np.arange(nn * 4)
         self.declare_partials("R_normed", "R", rows=ar, cols=ar)
@@ -414,13 +443,18 @@ class NormalizeQuat(om.ExplicitComponent):
 
 
 class InvertQuat(om.ExplicitComponent):
+    """
+    the rotation quaternion q represents rotation from body to inertial frame. To transform a vector from inertial frame to body frame
+    we need the inverse quaternion.
+    """
+
     def initialize(self):
         self.options.declare("num_nodes", types=int)
 
     def setup(self):
         nn = self.options["num_nodes"]
-        self.add_input("R_normed", val=np.zeros([nn, 4]), units=None)
-        self.add_output("R_inverse", val=np.zeros([nn, 4]), units=None)
+        self.add_input("R_normed", val=np.zeros([nn, 4]), units=None, desc="normalized body frame to inertial frame quaternion")
+        self.add_output("R_inverse", val=np.zeros([nn, 4]), units=None, desc="inertial frame to body frame quaternion")
         ar = np.arange(4 * nn)
         a = np.array([1, -1, -1, -1])
         self.a = a
@@ -432,16 +466,20 @@ class InvertQuat(om.ExplicitComponent):
 
 
 class Accel(om.ExplicitComponent):
+    """
+    calculate acceleration vector in body frame so that it can rotated into inertial frame and integrated
+    """
+
     def initialize(self):
         self.options.declare("num_nodes", types=int)
 
     def setup(self):
         nn = self.options["num_nodes"]
 
-        self.add_input("F_total_b", val=np.zeros([nn, 3]), units="N")
-        self.add_input("g_b", val=np.zeros([nn, 3]), units="m/s**2")
-        self.add_input("m", val=np.ones(nn), units="kg")
-        self.add_output("a_b", val=np.ones([nn, 3]), units="m/s**2")
+        self.add_input("F_total_b", val=np.zeros([nn, 3]), units="N", desc="resultant vector of summed forces on body")
+        self.add_input("g_b", val=np.zeros([nn, 3]), units="m/s**2", desc="gravitational acceleration vector in body frame")
+        self.add_input("m", val=np.ones(nn), units="kg", desc="mass of body")
+        self.add_output("a_b", val=np.ones([nn, 3]), units="m/s**2", desc="acceleration vector")
 
         num_jac_entries = 3 * nn
 
@@ -475,7 +513,13 @@ class Accel(om.ExplicitComponent):
 
 
 class ForceAndMomentAdderGroup(om.Group):
+    """
+    sum  all forces and moments acting on body.
+    Forces act a given position, which generate a moment, unless acting at the Center of Mass
+    """
+
     # TODO add dummy force so adder can deal with just one force
+
     def __init__(self, **kwargs):
         """
         Initialize the frame rotation component.

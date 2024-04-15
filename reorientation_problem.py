@@ -73,7 +73,7 @@ phase.add_parameter("I", val=I_mat, units="kg*m**2", targets=["I"])
 
 # test mixing wildcard ODE variable expansion and unit overrides
 # phase.timeseries_options["include_parameters"] = False
-phase.add_timeseries_output(["w_i", "w_b", "M_i", "X_i", "Y_i", "Z_i", "M_control"])
+phase.add_timeseries_output(["w_i", "w_b", "M_i", "X_i", "Y_i", "Z_i", "M_control", "g_i_2"])
 # phase.add_timeseries_output("*")
 phase.add_objective("time", loc="final", scaler=1)
 
@@ -110,10 +110,11 @@ t = p.get_val("traj.phase0.timeseries.time")
 w_i = p.get_val("traj.phase0.timeseries.w_i")
 w_b = p.get_val("traj.phase0.timeseries.w_b")
 M_b = p.get_val("traj.phase0.timeseries.M_control")
-M_i = p.get_val("traj.phase0.timeseries.M_i") /50
+M_i = p.get_val("traj.phase0.timeseries.M_i") / 50
 X_i = p.get_val("traj.phase0.timeseries.X_i")
 Y_i = p.get_val("traj.phase0.timeseries.Y_i")
 Z_i = p.get_val("traj.phase0.timeseries.Z_i")
+g_i = p.get_val("traj.phase0.timeseries.g_i_2")
 w_i_normed = w_i / np.linalg.norm(w_i, axis=1)[:, np.newaxis]
 
 ax1.plot(t, w_i, label="w inertial")
@@ -146,6 +147,7 @@ ax.set_zlim(-1, 1)
 ax.set_xlabel("X")
 ax.set_ylabel("Y")
 ax.set_zlabel("Z")
+
 
 def update_quiver(frame):
     """updates the horizontal and vertical vector components by a
